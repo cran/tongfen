@@ -1,7 +1,7 @@
 ## ---- include = FALSE---------------------------------------------------------
 knitr::opts_chunk$set(
-	message = FALSE,
-	warning = FALSE,
+#	message = FALSE,
+#	warning = FALSE,
 	collapse = TRUE,
   eval = nzchar(Sys.getenv("COMPILE_VIG")),
 	comment = "#>"

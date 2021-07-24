@@ -14,7 +14,7 @@ library(tidyr)
 library(cancensus)
 library(sf)
 library(tongfen)
-#Sys.setenv(CM_API_KEY = getOption("cancensus.api_key"))
+# cancensus::set_api_key("<your cancensus API key>")
 
 ## -----------------------------------------------------------------------------
 rent_variables <- c(rent_2001="v_CA01_1667",rent_2016="v_CA16_4901",  

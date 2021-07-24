@@ -90,7 +90,7 @@ compare_geos <- rbind(vancouver_elections_geos_2015 %>% mutate(type="2015") %>% 
 
 ridings <- vancouver_elections_geos_2019 %>% 
   group_by(FED_NUM) %>%
-  summarize() 
+  summarize(.groups="drop") 
 
 
 ggplot(compare_geos) +
@@ -122,7 +122,7 @@ plot_data <- base_geo %>%
 
 plot_data2 <- vancouver_elections_geos_2019 %>% 
   group_by(FED_NUM) %>%
-  summarize() 
+  summarize(.groups="drop") 
 
 plot_data %>% 
   ggplot(aes(fill=Share_2019-Share_2015)) +

@@ -39,6 +39,7 @@ meta_for_additive_variables <- function(dataset,variables){
 #' @param target custom geography to estimate values for
 #' @param source input geography with values
 #' @param meta metadata for variable aggregation
+#' @param na.rm remove NA values when aggregating, default is FALSE
 #' @export
 #'
 #' @examples
@@ -49,7 +50,20 @@ meta_for_additive_variables <- function(dataset,variables){
 #' meta <- meta_for_additive_variables("CA06","Population")
 #' result <- tongfen_estimate(geo2 %>% rename(Population_2016=Population),geo1,meta)
 #'}
-tongfen_estimate <- function(target,source,meta) {
+tongfen_estimate <- function(target,source,meta,na.rm=FALSE) {
+  # make sure we only have polygon type geomtries
+  target_geo_types <- target %>% sf::st_geometry_type() %>% unique
+  source_geo_types <- source %>% sf::st_geometry_type() %>% unique
+  if (length(setdiff(target_geo_types,c("MULTIPOLYGON","POLYGON")))>0) {
+    warning(paste0("Target geometry has to be of type POLYGON or MULTIPOLYGON, but given target has types ",
+                   paste0(target_geo_types,collapse=", "),". Dropping other geometries."))
+    target <- target %>% sf::st_collection_extract("POLYGON")
+  }
+  if (length(setdiff(source_geo_types,c("MULTIPOLYGON","POLYGON")))>0) {
+    warning(paste0("SOURCE geometry has to be of type POLYGON or MULTIPOLYGON, but given SOURCE has types ",
+                   paste0(source_geo_types,collapse=", "),". Dropping other geometries."))
+    source <- source %>% sf::st_collection_extract("POLYGON")
+  }
 
   unique_key="tongfen_row_number"
   target <- target %>% mutate(!!unique_key:=row_number())
@@ -61,19 +75,70 @@ tongfen_estimate <- function(target,source,meta) {
   # rename variables, st_interpolate_aw does not handle column names with special characters
   safe_rename_vars <- setNames(meta$data_var,meta$var_name)
   safe_rename_back <- setNames(meta$var_name,meta$data_var)
-  result <- sf::st_interpolate_aw(source %>%
-                                    select(meta$data_var) %>%
-                                    rename(!!!safe_rename_vars) %>%
-                                    mutate_all(function(x)tidyr::replace_na(x,0)) %>%
-                                    pre_scale(meta,meta_var = "data_var"),
-                                  target,
-                                  extensive = TRUE) %>%
-    rename(!!unique_key:=.data$Group.1) %>%
-    post_scale(meta,meta_var = "data_var") %>%
-    left_join(target %>% sf::st_set_geometry(NULL),
+
+  # do this manually for better control
+  i = suppressMessages(st_intersection(st_geometry(source), st_geometry(target)))
+  idx = attr(i, "idx")
+
+  gc = which(st_is(i, "GEOMETRYCOLLECTION"))
+  i[gc] = st_collection_extract(i[gc], "POLYGON")
+  two_d = which(st_dimension(i) == 2)
+  i[two_d] = st_cast(i[two_d], "MULTIPOLYGON")
+
+  source <- source %>% rename(!!!safe_rename_vars)
+
+  x_st <- source[idx[,1],, drop=FALSE] %>%
+    select(names(safe_rename_vars)) %>%
+    pre_scale(meta,meta_var = "var_name") %>%
+    mutate(...area_st = st_area(i) %>% unclass,
+           ...area_s = unclass(st_area(.))) %>%
+    mutate(...factor = .data$...area_st/.data$...area_s) %>%
+    mutate(...partial = .data$...factor < 0.99) %>%
+    st_drop_geometry()
+
+
+  for (var in meta$var_name) {
+    # for (ci in naive_CI) {
+    #   c <- ci/100
+    #   x_st <- x_st %>%
+    #     mutate(!!paste0(var,"_lower_",ci) := !!as.name(var) * ifelse(.data$...partial,(1-c) * .data$...factor, 1),
+    #            !!paste0(var,"_upper_",ci) := !!as.name(var) * ifelse(.data$...partial,(1-c) * .data$...factor + c, 1))
+    #
+    # }
+    x_st <- x_st %>%
+      mutate(!!var:=!!as.name(var) * .data$...factor)
+  }
+
+  x_st <- stats::aggregate(x_st, list(idx[,2]), sum, na.rm=na.rm)
+
+  result <- target %>%
+    left_join(x_st %>%
+                select(-.data$...factor,-.data$...partial,-.data$...area_s,-.data$...area_st) %>%
+                rename(!!unique_key:="Group.1"),
               by=unique_key) %>%
-    select(-one_of(unique_key)) %>%
+    select(-all_of(unique_key)) %>%
+    post_scale(meta,meta_var = "var_name") %>%
     rename(!!!safe_rename_back)
+
+  # df = st_sf(x_st, geometry = st_geometry(target)[x_st$Group.1]) %>%
+  #   select(-.data$...factor,-.data$...partial,-.data$...area_s,-.data$...area_st,-.data$Group.1) %>%
+  #   st_set_agr("aggregate")
+
+  # result <- sf::st_interpolate_aw(source %>%
+  #                                   select(meta$data_var) %>%
+  #                                   rename(!!!safe_rename_vars) %>%
+  #                                   mutate_all(function(x)tidyr::replace_na(x,0)) %>%
+  #                                   pre_scale(meta,meta_var = "var_name") ,
+  #                                 target,
+  #                                 extensive = TRUE) %>%
+  #   mutate(!!unique_key:=target %>% pull(unique_key)) %>%
+  #   #rename(!!unique_key:=.data$Group.1) %>%
+  #   post_scale(meta,meta_var = "var_name") %>%
+  #   left_join(target %>% sf::st_set_geometry(NULL),
+  #             by=unique_key) %>%
+  #   select(-one_of(unique_key)) %>%
+  #   rename(!!!safe_rename_back)
+
 
   result
 }
@@ -85,7 +150,9 @@ cut_meta <- function(data,meta){
 }
 
 pre_scale <- function(data,meta,meta_var="data_var",quiet=FALSE) {
-  parent_lookup <- setNames(meta$parent,meta %>% pull(meta_var))
+  meta_name_lookup <- setNames(meta %>% pull(meta_var),meta$variable)
+  meta$parent_name <- meta_name_lookup[meta$parent]
+  parent_lookup <- setNames(meta$parent_name,meta %>% pull(meta_var))
   to_scale <-  filter(meta,.data$rule %in% c("Median","Average")) %>% pull(meta_var)
   not_additive <- filter(meta,.data$rule == "Not additive") %>% pull(meta_var)
   median_vars <- filter(meta,.data$rule %in% c("Median")) %>% pull(meta_var)
@@ -106,7 +173,9 @@ pre_scale <- function(data,meta,meta_var="data_var",quiet=FALSE) {
 }
 
 post_scale <- function(data,meta,meta_var="data_var") {
-  parent_lookup <- setNames(meta$parent,meta %>% pull(meta_var))
+  meta_name_lookup <- setNames(meta %>% pull(meta_var),meta$variable)
+  meta$parent_name <- meta_name_lookup[meta$parent]
+  parent_lookup <- setNames(meta$parent_name,meta %>% pull(meta_var))
   to_scale <-  filter(meta,.data$rule %in% c("Median","Average")) %>% pull(meta_var)
 
   for (x in to_scale) {
@@ -183,7 +252,7 @@ aggregate_data_with_meta <- function(data,meta,geo=FALSE,na.rm=TRUE,quiet=FALSE)
     geo_column=attr(data,"sf_column")
     data <- left_join(data %>%
                         select(c(geo_column,grouping_var)) %>%
-                        summarize(!!geo_column:=sf::st_union(!!as.name(geo_column)) %>%
+                        summarize(!!geo_column:=suppressMessages(sf::st_union(!!as.name(geo_column))) %>%
                                     sf::st_cast("MULTIPOLYGON")),
                       data %>%
                         sf::st_set_geometry(NULL) %>%
@@ -275,7 +344,15 @@ tongfen_aggregate <- function(data,correspondence,meta=NULL, base_geo = NULL){
       if (!is.null(meta)) {
         d <- d %>%  aggregate_data_with_meta(meta)
       } else {
-        d <- d %>% summarize()
+        if ("sf" %in% class(d)) {
+          geo_column=attr(d,"sf_column")
+          d <- d %>% summarize(!!geo_column:=suppressMessages(sf::st_union(!!as.name(geo_column))) %>%
+                      sf::st_cast("MULTIPOLYGON"),
+                      .groups="drop")
+
+        } else {
+          d <- d %>% summarize(.groups="drop")
+        }
       }
     }) %>%
     setNames(nn)

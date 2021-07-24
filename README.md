@@ -1,6 +1,10 @@
 # tongfen
 
-[![Build Status](https://travis-ci.org/mountainMath/tongfen.svg?branch=master)](https://travis-ci.org/mountainMath/tongfen)
+<!-- badges: start -->
+[![R build status](https://github.com/mountainMath/tongfen/workflows/R-CMD-check/badge.svg)](https://github.com/mountainMath/tongfen/actions)
+[![CRAN_Status_Badge](http://www.r-pkg.org/badges/version/tongfen)](https://cran.r-project.org/package=tongfen)
+[![CRAN_Downloads_Badge](https://cranlogs.r-pkg.org/badges/tongfen)](https://cranlogs.r-pkg.org/badges/tongfen)
+<!-- badges: end -->
 
 <a href="https://mountainmath.github.io/tongfen/index.html"><img src="https://raw.githubusercontent.com/mountainMath/tongfen/master/images/tongfen-sticker.png" alt="tongfen logo" align="right" width = "25%" height = "25%"/></a>
 TongFen (通分) means to convert two fractions to the least common denominator, typically in preparation for further manipulation like addition or subtraction. In English, that's a mouthful and sounds complicated. But in Chinese there is a word for this, TongFen, which makes this process appear very simple.
@@ -9,13 +13,17 @@ When working with geospatial datasets we often want to compare data that is give
 
 ### Reference
 
-[**TongFen home page and reference guide**](https://mountainmath.github.io/tongfen/index.html)
+[**TongFen home page and reference guide**](https://mountainmath.github.io/tongfen/)
 
 ### Installing the package
 
-The package can be installed from GitHub.
 ```
-devtools::install_github("mountainmath/tongfen")
+install.packages("tongfen")
+```
+
+The latest development version can be installed from GitHub.
+```
+remotes::install_github("mountainmath/tongfen")
 library(tongfen)
 ```
 
@@ -72,3 +80,21 @@ This method has the example that it works independent of the nature of the under
 
 Methods to facilitate this are still under active development. 
 
+### Cite **tongfen**
+
+If you wish to cite tongfen:
+
+  von Bergmann, J. (2021). tongfen: R package to
+  Make Data Based on Different Geographies Comparable. v0.3.3.
+
+
+A BibTeX entry for LaTeX users is
+```
+  @Manual{,
+    author = {Jens {von Bergmann}},
+    title = {tongfen: R package to Make Data Based on Different Geographies Comparable},
+    year = {2021},
+    note = {R package version 0.3.3},
+    url = {https://mountainmath.github.io/tongfen/},
+  }
+```
