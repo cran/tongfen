@@ -51,8 +51,10 @@ pre_scale <- function(data,meta,meta_var="data_var",quiet=FALSE) {
   }
 
 
-  for (x in to_scale) {
-    data <- data %>% mutate(!!x := !!as.name(x)*!!as.name(parent_lookup[x]))
+  if (length(to_scale) > 0) {
+    scale_exprs <- lapply(setNames(to_scale, to_scale), \(col)
+      rlang::expr(!!as.name(col) * !!as.name(unname(parent_lookup[col]))))
+    data <- data %>% mutate(!!!scale_exprs)
   }
 
   data
@@ -64,8 +66,10 @@ post_scale <- function(data,meta,meta_var="data_var") {
   parent_lookup <- setNames(meta$parent_name,meta %>% pull(meta_var))
   to_scale <-  filter(meta,.data$rule %in% c("Median","Average")) %>% pull(meta_var)
 
-  for (x in to_scale) {
-    data <- data %>% mutate(!!x := !!as.name(x)/!!as.name(parent_lookup[x]))
+  if (length(to_scale) > 0) {
+    scale_exprs <- lapply(setNames(to_scale, to_scale), \(col)
+      rlang::expr(!!as.name(col) / !!as.name(unname(parent_lookup[col]))))
+    data <- data %>% mutate(!!!scale_exprs)
   }
 
   data
@@ -112,8 +116,10 @@ aggregate_data_with_meta <- function(data,meta,geo=FALSE,na.rm=TRUE,quiet=FALSE)
       message(paste0("Can't TongFen medians, will approximate by treating as averages: ",paste0(median_vars,collapse = ", ")))
   }
 
-  for (x in to_scale) {
-    data <- data %>% mutate(!!x := !!as.name(x)*!!as.name(parent_lookup[x]))
+  if (length(to_scale) > 0) {
+    scale_exprs <- lapply(setNames(to_scale, to_scale), \(col)
+      rlang::expr(!!as.name(col) * !!as.name(unname(parent_lookup[col]))))
+    data <- data %>% mutate(!!!scale_exprs)
   }
 
   base_variables <- c()
@@ -147,13 +153,19 @@ aggregate_data_with_meta <- function(data,meta,geo=FALSE,na.rm=TRUE,quiet=FALSE)
   } else {
     data <- data %>% summarize_at(meta$variable,sum,na.rm=na.rm)
   }
-  for (x in to_scale) {
-    data <- data %>% mutate(!!x := !!as.name(x)/!!as.name(parent_lookup[x]))
+
+  if (length(to_scale) > 0) {
+    scale_exprs <- lapply(setNames(to_scale, to_scale), \(col)
+      rlang::expr(!!as.name(col) / !!as.name(unname(parent_lookup[col]))))
+    data <- data %>% mutate(!!!scale_exprs)
   }
-  for (x in to_scale_from) {
-    scale_type <- meta %>% filter(.data$variable==x) %>% pull(units) %>% as.character()
-    base_vector <- paste0("base_",parent_lookup[x])
-    data <- data %>% mutate(!!x := !!as.name(x)/!!as.name(base_vector))
+
+  # Optimized: Vectorized division by base vectors
+  if (length(to_scale_from) > 0) {
+    for (x in to_scale_from) {
+      base_vector <- paste0("base_", parent_lookup[x])
+      data[[x]] <- data[[x]] / data[[base_vector]]
+    }
   }
   data
 }
@@ -306,9 +318,15 @@ tongfen_aggregate <- function(data,correspondence,meta=NULL, base_geo = NULL){
 #'
 #'}
 proportional_reaggregate <- function(data,parent_data,geo_match,categories,base="Population"){
+
+  var_types <- parent_data %>%
+    st_drop_geometry %>%
+    select(any_of(categories)) %>%
+    lapply(class)
+
   # create zero categories if we don't have them on base (for example DB geo)
   for (v in setdiff(categories,names(data))) {
-    data <- data %>% mutate(!!v := NA_real_)
+    data <- data %>% mutate(!!v := parent_data[[v]][NA_integer_])
   }
 
   if (length(base) == 1 && length(categories)>1) {
@@ -349,37 +367,50 @@ proportional_reaggregate <- function(data,parent_data,geo_match,categories,base=
   data <- data %>%
     mutate(!!id:=as.character(row_number()))
 
-  d_base <- data %>%
-    st_drop_geometry() %>%
-    select(any_of(c(id,na_base,names(geo_match),unique_base_vars,categories))) %>%
-    tidyr::pivot_longer(cols=all_of(categories),
-                        names_to="category",
-                        values_to="value") %>%
-    mutate(weight=select(.,base[.data$category])[[1]]) %>%
-    mutate(agg_type=ifelse(.data$category %in% na_weight_cats,"na_weight","additive")) %>%
-    mutate(weight=.data$weight/sum(.data$weight,na.rm=TRUE),.by=c(names(geo_match),"category")) %>%
-    mutate(weight=coalesce(.data$weight,0)) %>%
-    mutate(weight=if_else(.data$agg_type=="na_weight",NA_real_,.data$weight)) %>%
-    select(-any_of(unique_base_vars))
+  var_types_primary <- vapply(var_types, `[[`, character(1), 1)
 
-  d_parent <- parent_data %>%
-    st_drop_geometry() %>%
-    select(any_of(c(as.character(geo_match),categories))) %>%
-    tidyr::pivot_longer(cols=all_of(categories),
-                        names_to="category",
-                        values_to="p_value")
+  d_result <- unique(var_types_primary) %>%
+    lapply(\(vt){
+      cats <- names(var_types_primary)[var_types_primary==vt]
+      d_base <- data %>%
+        st_drop_geometry() %>%
+        select(any_of(c(id,na_base,names(geo_match),unique_base_vars,cats))) %>%
+        tidyr::pivot_longer(cols=all_of(cats),
+                            names_to="category",
+                            values_to="value") %>%
+        mutate(weight=select(.,base[.data$category])[[1]]) %>%
+        mutate(agg_type=ifelse(.data$category %in% na_weight_cats,"na_weight","additive")) %>%
+        mutate(weight=.data$weight/sum(.data$weight,na.rm=TRUE),.by=c(names(geo_match),"category")) %>%
+        mutate(weight=coalesce(.data$weight,0)) %>%
+        mutate(weight=if_else(.data$agg_type=="na_weight",NA_real_,.data$weight)) %>%
+        select(-any_of(unique_base_vars))
 
-  d_combined <- full_join(d_base,d_parent,by=c(geo_match,"category"="category")) %>%
-    mutate(s_value=sum(.data$value),.by=names(geo_match)) %>%
-    mutate(across(any_of(c("p_value","s_value")),\(x)coalesce(x,0))) %>%
-    mutate(value=case_when(.data$agg_type=="additive" ~ coalesce(.data$value,0) + .data$weight*(.data$p_value-.data$s_value),
-                         is.na(.data$value) ~ .data$p_value,
-                         TRUE ~ .data$value))
+      d_parent <- parent_data %>%
+        st_drop_geometry() %>%
+        select(any_of(c(as.character(geo_match),cats))) %>%
+        tidyr::pivot_longer(cols=all_of(cats),
+                            names_to="category",
+                            values_to="p_value")
+      if (vt %in% c("numeric","integer","integer64")) {
+        d_combined <- full_join(d_base,d_parent,by=c(geo_match,"category"="category")) %>%
+          mutate(s_value=sum(.data$value),.by=names(geo_match)) %>%
+          mutate(across(any_of(c("p_value","s_value")),\(x)coalesce(x,0))) %>%
+          mutate(value=case_when(.data$agg_type=="additive" ~ coalesce(.data$value,0) + .data$weight*(.data$p_value-.data$s_value),
+                                 is.na(.data$value) ~ .data$p_value,
+                                 TRUE ~ .data$value))
+      } else {
+        d_combined <- full_join(d_base,d_parent,by=c(geo_match,"category"="category")) %>%
+          mutate(value=case_when(is.na(.data$value) ~ .data$p_value,
+                                 TRUE ~ .data$value))
+      }
 
-  d_result <- d_combined %>%
-    select(any_of(id),"category","value") %>%
-    tidyr::pivot_wider(names_from="category",
-                        values_from="value")
+      d_result <- d_combined %>%
+        select(any_of(id),"category","value") %>%
+        tidyr::pivot_wider(names_from="category",
+                           values_from="value")
+      d_result
+    }) %>%
+    Reduce(\(x,y)full_join(x,y,by=id),.)
 
   data %>%
     select(-any_of(c(categories,na_base))) %>%
@@ -456,24 +487,25 @@ estimate_tongfen_single_correspondence <- function(geo1,geo2,geo1_uid,geo2_uid,
   cgeo1 <- geo1 %>% robust_tolerance_buffer(geo_uid = geo1_uid,tolerance = tolerance)
   cgeo2 <- geo2 %>% robust_tolerance_buffer(geo_uid = geo2_uid,tolerance = tolerance)
 
-  i1 <- cgeo1 %>%
-    st_intersects(geo2,sparse = TRUE) %>%
+  # Optimized: Both intersections are necessary (buffered cgeo1 vs geo2, and cgeo2 vs geo1)
+  # But we can streamline the conversion and processing
+  # Convert sparse matrix directly to tibble, avoiding intermediate data.frame step
+  i1 <- st_intersects(cgeo1, geo2, sparse = TRUE) %>%
     as.data.frame() %>%
     as_tibble() %>%
-    rename(id1=.data$row.id,id2=.data$col.id) %>%
-    left_join(id1,by="id1") %>%
-    left_join(id2,by="id2") %>%
-    select(-id1,-id2)
-  i2 <- cgeo2 %>%
-    st_intersects(geo1,sparse = TRUE) %>%
-    as.data.frame() %>%
-    as_tibble() %>%
-    rename(id2=.data$row.id,id1=.data$col.id) %>%
-    left_join(id1,by="id1") %>%
-    left_join(id2,by="id2") %>%
-    select(-id1,-id2)
+    left_join(id1, by = c("row.id" = "id1")) %>%
+    left_join(id2, by = c("col.id" = "id2")) %>%
+    select(-.data$row.id, -.data$col.id)
 
-  correspondence <- bind_rows(i1,i2) %>%
+  i2 <- st_intersects(cgeo2, geo1, sparse = TRUE) %>%
+    as.data.frame() %>%
+    as_tibble() %>%
+    left_join(id2, by = c("row.id" = "id2")) %>%
+    left_join(id1, by = c("col.id" = "id1")) %>%
+    select(-.data$row.id, -.data$col.id)
+
+  # Combine and find correspondence
+  correspondence <- bind_rows(i1, i2) %>%
     unique() %>%
     get_tongfen_correspondence()
 
